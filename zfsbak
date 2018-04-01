@@ -22,7 +22,8 @@ upload() {
     dest_tmp="$dest_file.$$"
 
     ssh "$host" "mkdir -p '$(dirname "$dest_file")'"
-    pv | xz -9 | gpg2 -e -r "$recipient" | ssh "$host" "dd of='$dest_tmp' status=none"
+    pv | nice pigz -9 | gpg2 -e -r "$recipient" --compress-algo none |
+        ssh "$host" "dd of='$dest_tmp' status=none"
     ssh "$host" "mv '$dest_tmp' '$dest_file'"
 }
 
@@ -77,7 +78,7 @@ if [[ -z "$last_full_backup" ]] && [[ $(age "$now" "$last_full_backup") -lt 30 ]
     trap "zfs destroy '$dataset@$tmp_name'" EXIT
 
     # Upload the backup
-    dest_file="$dir/$dataset@$name.xz.gpg"
+    dest_file="$dir/$dataset@$name.gz.gpg"
     zfs send -R "$dataset@$tmp_name" |
         upload "$recipient" "$host" "$dest_file"
 
@@ -94,7 +95,7 @@ else
     zfs snapshot "$dataset@$name"
     trap "zfs destroy '$dataset@$name'" EXIT
 
-    dest_file="$dir/$last_full_backup@$now.xz.gpg"
+    dest_file="$dir/$last_full_backup@$now.gz.gpg"
     zfs send -R -i "$last_full_backup" "$dataset@$name" |
         upload "$recipient" "$host" "$dest_file"
 fi

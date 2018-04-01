@@ -6,14 +6,14 @@ zfsbak automatically creates a full backup every thirty days. Incremental
 backups are based on the last full backup, so that a maximum of two files are
 used when restoring.
 
-Backups are compressed using `xz` (LZMA) and encrypted using GnuPG.
+Backups are compressed using zlib (via `pigz`) and encrypted using GnuPG.
 
 ## Set up
 
 Make sure you have the dependencies:
 
 ~~~
-dnf install -y xz pv gnupg2
+dnf install -y pigz pv gnupg2
 ~~~
 
 [Set up GnuPG](https://www.gnupg.org/gph/en/manual/c14.html) so that you have a
