@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+list_snapshots() {
+    zfs list -H -d 1 -s name -t snapshot "$1"
+}
+
+list_full_backups() {
+    list_snapshots "$1" | awk '$1 ~ /@backup-[0-9]{14}Z$/ { print $1 }'
+}
+
+get_last_full_backup() {
+    list_full_backups "$1" | tail -1
+}
+
+upload() {
+    recipient="$1"; shift
+    host="$1";      shift
+    dest_file="$1"; shift
+
+    dest_tmp="$dest_file.$$"
+
+    ssh "$host" "mkdir -p '$(dirname "$dest_file")'"
+    pv | xz -9 | gpg2 -e -r "$recipient" | ssh "$host" "dd of='$dest_tmp' status=none"
+    ssh "$host" "mv '$dest_tmp' '$dest_file'"
+}
+
+age() {
+    now="$1";  shift
+    then="$1"; shift
+
+    seconds=$(( $(TZ=UTC date -d "${now:0:8}" +%s) - $(TZ=UTC date -d "${then:0:8}" +%s) ))
+    days=$(( seconds / 86400 ))
+
+    echo $days
+}
+
+OPTIND=1
+
+host=''
+dir='.'
+recipient=''
+while getopts "r:h:d:" opt; do
+    case "$opt" in
+    h) host="$OPTARG" ;;
+    d) dir="$OPTARG" ;;
+    r) recipient="$OPTARG" ;;
+    esac
+done
+
+shift $((OPTIND-1))
+if [[ $# -ne 1 ]] || [[ -z $host ]] || [[ -z $recipient ]]; then
+    echo "Usage: $0 -r gpg_key -h [user@]host [-d dir] dataset" >&2
+    exit 1
+fi
+
+dataset="$1"
+if ! zfs list -H -t filesystem "$dataset" >/dev/null; then
+    exit 1
+fi
+
+last_full_backup="$(get_last_full_backup "$dataset")"
+now="$(TZ=UTC date +%Y%m%d%H%M%SZ)"
+
+if [[ -z "$last_full_backup" ]] && [[ $(age "$now" "$last_full_backup") -lt 30 ]]; then
+    # Make a full backup
+
+    name="backup-$now"
+    tmp_name="$name-tmp"
+
+    echo "$dataset@$name" >&2
+
+    # Create a temporary snapshot which is deleted if the backup
+    # fails somehow
+    zfs snapshot "$dataset@$tmp_name"
+    trap "zfs destroy '$dataset@$tmp_name'" EXIT
+
+    # Upload the backup
+    dest_file="$dir/$dataset@$name.xz.gpg"
+    zfs send -R "$dataset@$tmp_name" |
+        upload "$recipient" "$host" "$dest_file"
+
+    # Rename the temporary snaphot
+    zfs rename "$dataset@$tmp_name" "$dataset@$name"
+    trap "" EXIT
+else
+    # Make an incremental backup
+
+    name="incr-$now"
+
+    echo "$last_full_backup -> $name" >&2
+
+    zfs snapshot "$dataset@$name"
+    trap "zfs destroy '$dataset@$name'" EXIT
+
+    dest_file="$dir/$last_full_backup@$now.xz.gpg"
+    zfs send -R -i "$last_full_backup" "$dataset@$name" |
+        upload "$recipient" "$host" "$dest_file"
+fi
