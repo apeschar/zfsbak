@@ -37,34 +37,48 @@ age() {
     echo $days
 }
 
+backup_timestamp() {
+    t="$1"
+    t="${t##*-}"
+    echo "$t"
+}
+
 OPTIND=1
 
 host=''
 dir='.'
 recipient=''
-while getopts "r:h:d:" opt; do
+full=0
+while getopts "r:h:d:f" opt
+do
     case "$opt" in
     h) host="$OPTARG" ;;
     d) dir="$OPTARG" ;;
     r) recipient="$OPTARG" ;;
+    f) full=1 ;;
     esac
 done
 
 shift $((OPTIND-1))
-if [[ $# -ne 1 ]] || [[ -z $host ]] || [[ -z $recipient ]]; then
+if [[ $# -ne 1 ]] || [[ -z $host ]] || [[ -z $recipient ]]
+then
     echo "Usage: $0 -r gpg_key -h [user@]host [-d dir] dataset" >&2
     exit 1
 fi
 
 dataset="$1"
-if ! zfs list -H -t filesystem "$dataset" >/dev/null; then
+if ! zfs list -H -t filesystem "$dataset" >/dev/null
+then
     exit 1
 fi
 
 last_full_backup="$(get_last_full_backup "$dataset")"
 now="$(TZ=UTC date +%Y%m%d%H%M%SZ)"
 
-if [[ -z "$last_full_backup" ]] && [[ $(age "$now" "$last_full_backup") -lt 30 ]]; then
+if [[ -z "$last_full_backup" ]] ||
+   [[ $(age "$now" "$(backup_timestamp "$last_full_backup")") -gt 30 ]] ||
+   [[ $full -eq 1 ]]
+then
     # Make a full backup
 
     name="backup-$now"
@@ -75,16 +89,15 @@ if [[ -z "$last_full_backup" ]] && [[ $(age "$now" "$last_full_backup") -lt 30 ]
     # Create a temporary snapshot which is deleted if the backup
     # fails somehow
     zfs snapshot "$dataset@$tmp_name"
-    trap "zfs destroy '$dataset@$tmp_name'" EXIT
+    trap "zfs destroy '$dataset@$tmp_name' &>/dev/null" EXIT
 
     # Upload the backup
     dest_file="$dir/$dataset@$name.gz.gpg"
-    zfs send -R "$dataset@$tmp_name" |
+    zfs send -R "$dataset@$tmp_name" | pv |
         upload "$recipient" "$host" "$dest_file"
 
     # Rename the temporary snaphot
     zfs rename "$dataset@$tmp_name" "$dataset@$name"
-    trap "" EXIT
 else
     # Make an incremental backup
 
