@@ -21,6 +21,14 @@ class Filesystem(object):
             name, = line.split('\t')
             yield Snapshot(name)
 
+    @property
+    def dirname(self):
+        return '/'.join(self.name.split('/')[:-1])
+
+    @property
+    def basename(self):
+        return self.name.split('/')[-1]
+
 
 class Snapshot(object):
 
@@ -31,44 +39,43 @@ class Snapshot(object):
         return '<Snapshot %s on %s>' % (self.name, self.fs)
 
 
-class Backup(object):
+class Destination(object):
 
-    def __init__(self, snapshot):
-        match = re.match(r'(backup|incr)-(20[0-9]{12}Z)$', snapshot.name)
-        if not match:
-            raise ValueError("Not a backup snapshot: %s" % snapshot.name)
-        self.incremental = match.group(1) == 'incr'
-        self.created = dateutil.parser.parse(match.group(2))
+    def __init__(self, spec):
+        self.host, self.dir = spec.split(':', 1)
 
-    @classmethod
-    def from_snapshots(cls, snapshots):
-        for snapshot in snapshots:
-            try:
-                yield cls(snapshot)
-            except ValueError as e:
-                pass
+    def get_backups(self, filesystem):
+        output = subprocess.check_output([
+            'ssh', self.host, 'ls', '--', self.dir + '/' + filesystem.dirname]).decode('utf-8')
+        filenames = output.rstrip().split('\n')
+        result = []
+        incr = []
+        for filename in filenames:
+            match = re.match(r'([^@]+)@([^@]+)(?:@([^@]+))?\.gz\.gpg$', filename)
+            if not match: continue
+            if match.group(1) != filesystem.basename: continue
+            if match.group(3):
+                incr.append(match)
+            else:
+                try:
+                    result.append(next(filter(lambda s: s.name == match.group(2), snapshots)))
+                except StopIteration:
+                    pass
+        # Filter those snapshots in `incr' that have a matching snapshot.
+        # Needs to be recursive so that incrementals can refer to other incrementals.
+        return result
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('filesystem')
+    parser.add_argument('destination')
     args = parser.parse_args()
 
     fs = Filesystem(args.filesystem)
     snapshots = list(fs.snapshots)
-    backups = Backup.from_snapshots(snapshots)
-    backups = sorted(backups, key=lambda b: b.created)
+    dest = Destination(args.destination)
+    backups = list(dest.get_backups(fs))
 
-    try:
-        full_backup = next(filter(lambda b: not b.incremental, reversed(backups)))
-    except StopIteration:
-        full_backup = None
-
-    if full_backup:
-        # Make an incremental backup
-        pass
-
-    else:
-        # Make a full backup
-        raise RuntimeError("Full backups are not implemented")
+    print(backups)
