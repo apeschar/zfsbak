@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+
+import subprocess
+import argparse
+import re
+
+import dateutil.parser
+
+
+class Filesystem(object):
+
+    def __init__(self, name):
+        self.name = name
+
+    @property
+    def snapshots(self):
+        output = subprocess.check_output([
+            'zfs', 'list', '-H', '-d1', '-sname', '-oname', '-tsnapshot', self.name]).decode('utf-8')
+        for line in output.split('\n'):
+            if line == '': continue
+            name, = line.split('\t')
+            yield Snapshot(name)
+
+
+class Snapshot(object):
+
+    def __init__(self, full_name):
+        self.fs, self.name = full_name.split('@')
+
+    def __repr__(self):
+        return '<Snapshot %s on %s>' % (self.name, self.fs)
+
+
+class Backup(object):
+
+    def __init__(self, snapshot):
+        match = re.match(r'(backup|incr)-(20[0-9]{12}Z)$', snapshot.name)
+        if not match:
+            raise ValueError("Not a backup snapshot: %s" % snapshot.name)
+        self.incremental = match.group(1) == 'incr'
+        self.created = dateutil.parser.parse(match.group(2))
+
+    @classmethod
+    def from_snapshots(cls, snapshots):
+        for snapshot in snapshots:
+            try:
+                yield cls(snapshot)
+            except ValueError as e:
+                pass
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('filesystem')
+    args = parser.parse_args()
+
+    fs = Filesystem(args.filesystem)
+    snapshots = list(fs.snapshots)
+    backups = Backup.from_snapshots(snapshots)
+    backups = sorted(backups, key=lambda b: b.created)
+
+    try:
+        full_backup = next(filter(lambda b: not b.incremental, reversed(backups)))
+    except StopIteration:
+        full_backup = None
+
+    if full_backup:
+        # Make an incremental backup
+        pass
+
+    else:
+        # Make a full backup
+        raise RuntimeError("Full backups are not implemented")
